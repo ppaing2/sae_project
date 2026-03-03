@@ -19,7 +19,6 @@ library(ggplot2)
 library(ggridges)
 library(sf)
 library(spdep)
-library(INLA)
 library(geodata)
 library(patchwork)
 library(rdhs)
@@ -28,15 +27,44 @@ library(dplyr)
 library(SUMMER)
 library(prioritizr)
 library(survey)
+library(haven)
+library(sf)
+library(dplyr)
+library(prioritizr)
 ```
 
 First, I processed WA BRFSS County-level data. 
 ```{r}
 # load data
-setwd("C:/Users/ppaing2/sae_project")
-data(BRFSS)
-BRFSS <- subset(BRFSS, !is.na(BRFSS$smoker1))
-BRFSS <- subset(BRFSS, !is.na(BRFSS$hracode))
+brfss2023 <- read.csv("C:/Users/pxp3303/OneDrive - Washington State Executive Branch Agencies/BRFSS/WA_BRFSS_2023.csv")
+brfss2021 <- read.csv("C:/Users/pxp3303/OneDrive - Washington State Executive Branch Agencies/BRFSS/BRFSS2021.csv")
+brfss2019 <- read_dta("C:/Users/pxp3303/OneDrive - Washington State Executive Branch Agencies/BRFSS/WA_BRFSS_2019_v2.dta")
+names(brfss2019) <- gsub("^_", "X_", names(brfss2019))
+brfss2019 <- brfss2019 %>% rename(bphigh6 = bphigh4)
+brfss2023$Year <- 2023
+brfss2021$Year <- 2021
+brfss2019$Year <- 2019
+
+
+brfss19_21 <- merge(brfss2019, brfss2021, all.x = TRUE, all.y = TRUE)
+BRFSS <- merge(brfss19_21, brfss2023, all.x = TRUE, all.y = TRUE)
+
+# get weight by year to create combined weight
+prop.table(table(BRFSS$Year))
+
+BRFSS <- BRFSS %>%
+  mutate(c_wt= if_else(Year == 2019, X_llcpwt * 0.2471,
+                                    if_else(Year == 2021, X_llcpwt * 0.2499,
+                                            if_else(Year == 2023, X_llcpwt * 0.5029, NA_real_))))
+
+# clean hypertension variable
+BRFSS$highbp <- ifelse(BRFSS$bphigh6 == 1, 1, 
+                     ifelse(BRFSS$bphigh6 %in% c(2,3,4), 0, NA))
+table(BRFSS$highbp, useNA = "always")
+table(BRFSS$X_impcty, BRFSS$highbp, useNA = "always")
+
+# clean BRFSS data 
+BRFSS <- subset(BRFSS, !is.na(BRFSS$X_impcty & !is.na(BRFSS$highbp)))
 
 WaCounty <- st_read("data/wacounty.shp")
 WaCounty <- st_as_sf(WaCounty)
@@ -45,49 +73,63 @@ colnames(mat) <- rownames(mat) <- WaCounty$HRA2010v2_
 mat <- as.matrix(mat[1:dim(mat)[1], 1:dim(mat)[1]])
 mat[1:2, 1:2]
 
-# Set up survey design 
+# Set up survey design
+options(survey.lonely.psu = "adjust")
 design <- svydesign(
-  ids = ~1, weights = ~rwt_llcp,
-  strata = ~strata, data = BRFSS
+  ids = ~X_psu, weights = ~c_wt,
+  strata = ~X_ststr, data = BRFSS
   )
 
 # Direct estimates
-direct <- svyby(~smoker1, ~hracode, design, svymean)
+table(BRFSS$X_impcty, BRFSS$highbp)
+direct <- svyby(
+  ~highbp,
+  ~X_impcty,
+  design  = design,
+  FUN     = svymean,
+  na.rm   = TRUE,
+  vartype = "se")
 
 # Map weighted estimates and se
-colnames(direct) <- c("HRA2010v2_", "p_hat_w", "se_w")
+colnames(direct) <- c("CNTY", "p_hat_w", "se_w")
 
 # Merge the weighted estimates into the WaCounty sf object
 WaCounty_mapped <- merge(WaCounty, 
                            direct, 
-                           by = "HRA2010v2_", 
+                           by = "CNTY", 
                            all.x = TRUE)
 
 # Map of direct estimates
 mapPlot(data = WaCounty_mapped, 
         geo = WaCounty, 
         variables = "p_hat_w", 
-        labels = "Weighted Smoking Prevalence",
-        by.data = "HRA2010v2_", 
-        by.geo = "HRA2010v2_")
+        labels = "Weighted Hypertension Prevalence",
+        by.data = "CNTY", 
+        by.geo = "CNTY")
 
 # Map of Standard Errors
 mapPlot(data = WaCounty_mapped, 
         geo = WaCounty, 
         variables = "se_w", 
         labels = "Standard Error of Weighted Estimates",
-        by.data = "HRA2010v2_", 
-        by.geo = "HRA2010v2_")
+        by.data = "CNTY", 
+        by.geo = "CNTY")
 
 ```
 
 
 ```{r}
+if(!isTRUE(requireNamespace("INLA", quietly = TRUE))) {
+  install.packages("INLA", 
+                  repos = c(getOption("repos"), 
+                            INLA = "https://inla.r-inla-download.org/R/stable"), 
+                  dep = TRUE)}
+
 FHmodel <- smoothSurvey(
-data = BRFSS, geo = WaCounty, Amat = NULL, response.type = "binary",
-responseVar = "smoker1", strataVar = "strata", weightVar = "rwt_llcp",
-regionVar = "hracode", clusterVar = "~1", CI = 0.95
-)
+  data = BRFSS, geo = WaCounty, Amat = NULL, response.type = "binary",
+  responseVar = "highbp", strataVar = "X_ststr", weightVar = "c_wt",
+  regionVar = "X_impcty", clusterVar = "~X_psu", CI = 0.95
+  )
 FHmodel$fit$summary.fixed[1:5]
 
 # smooth 
