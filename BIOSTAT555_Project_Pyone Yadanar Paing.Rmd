@@ -1,0 +1,171 @@
+---
+title: "BIOSTAT 555_Final Project_Pyone Yadanar Paing"
+author: "ppaing2"
+date: "2026-03-13"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load packages
+```{r, message = F, warning = F}
+library(SpatialEpi)
+library(RColorBrewer)
+library(ggplot2)
+library(ggridges)
+library(sf)
+library(spdep)
+library(INLA)
+library(geodata)
+library(patchwork)
+library(rdhs)
+library(surveyPrev)
+library(dplyr)
+library(SUMMER)
+library(prioritizr)
+library(survey)
+```
+
+First, I processed WA BRFSS County-level data. 
+```{r}
+# load data
+setwd("C:/Users/ppaing2/sae_project")
+data(BRFSS)
+BRFSS <- subset(BRFSS, !is.na(BRFSS$smoker1))
+BRFSS <- subset(BRFSS, !is.na(BRFSS$hracode))
+
+WaCounty <- st_read("data/wacounty.shp")
+WaCounty <- st_as_sf(WaCounty)
+mat <- adjacency_matrix(WaCounty)
+colnames(mat) <- rownames(mat) <- WaCounty$HRA2010v2_
+mat <- as.matrix(mat[1:dim(mat)[1], 1:dim(mat)[1]])
+mat[1:2, 1:2]
+
+# Set up survey design 
+design <- svydesign(
+  ids = ~1, weights = ~rwt_llcp,
+  strata = ~strata, data = BRFSS
+  )
+
+# Direct estimates
+direct <- svyby(~smoker1, ~hracode, design, svymean)
+
+# Map weighted estimates and se
+colnames(direct) <- c("HRA2010v2_", "p_hat_w", "se_w")
+
+# Merge the weighted estimates into the WaCounty sf object
+WaCounty_mapped <- merge(WaCounty, 
+                           direct, 
+                           by = "HRA2010v2_", 
+                           all.x = TRUE)
+
+# Map of direct estimates
+mapPlot(data = WaCounty_mapped, 
+        geo = WaCounty, 
+        variables = "p_hat_w", 
+        labels = "Weighted Smoking Prevalence",
+        by.data = "HRA2010v2_", 
+        by.geo = "HRA2010v2_")
+
+# Map of Standard Errors
+mapPlot(data = WaCounty_mapped, 
+        geo = WaCounty, 
+        variables = "se_w", 
+        labels = "Standard Error of Weighted Estimates",
+        by.data = "HRA2010v2_", 
+        by.geo = "HRA2010v2_")
+
+```
+
+
+```{r}
+FHmodel <- smoothSurvey(
+data = BRFSS, geo = WaCounty, Amat = NULL, response.type = "binary",
+responseVar = "smoker1", strataVar = "strata", weightVar = "rwt_llcp",
+regionVar = "hracode", clusterVar = "~1", CI = 0.95
+)
+FHmodel$fit$summary.fixed[1:5]
+
+# smooth 
+svysmoothed <- smoothSurvey(
+data = BRFSS, geo = WaCounty, Amat = mat, response.type = "binary",
+responseVar = "diab2", strataVar = "strata", weightVar = "rwt_llcp",
+regionVar = "hracode", clusterVar = "~1", CI = 0.95
+)
+svysmoothed$fit$summary.fixed[1:5]
+svysmoothed$fit$summary.hyper[1:2, 1:5]
+sqrt(1 / svysmoothed$fit$summary.hyper[1, 3:5])
+
+fh_results <- svysmoothed$smooth
+fh_results$sd <- sqrt(fh_results$var) # SD is the square root of variance
+
+# Prepare for mapping 
+colnames(fh_results)[which(colnames(fh_results) == "region")] <- "HRA2010v2_"
+
+# Merge with the spatial data
+WaCounty_FH <- merge(WaCounty, fh_results, by = "HRA2010v2_")
+
+# Map 1: Posterior Means of Smoking Prevalence (pi)
+mapPlot(data = WaCounty_FH, 
+        geo = WaCounty, 
+        variables = "mean", 
+        labels = "Posterior Mean (Smoothed pi)",
+        by.data = "HRA2010v2_", 
+        by.geo = "HRA2010v2_")
+
+# Map 2: Posterior Standard Deviations of pi
+mapPlot(data = WaCounty_FH, 
+        geo = WaCounty, 
+        variables = "sd", 
+        labels = "Posterior SD (Smoothed pi)",
+        by.data = "HRA2010v2_", 
+        by.geo = "HRA2010v2_")
+
+```
+
+Question 2(c): 
+```{r}
+est <- data.frame(
+  weighted = svysmoothed$direct$direct.est,
+  weightedsmooth = svysmoothed$smooth$median
+)
+
+var <- data.frame(
+  weighted = svysmoothed$direct$direct.var,
+  weightedsmooth = svysmoothed$smooth$var
+)
+
+l1 <- range(est)
+l2 <- range(var)
+
+g1 <- ggplot(est, aes(x = weighted, y = weightedsmooth)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  ggtitle("Survey Wtd Ests") +
+  xlab("Direct") +
+  ylab("Smoothed") +
+  xlim(l1) +
+  ylim(l1)
+
+g2 <- ggplot(var, aes(x = weighted, y = weightedsmooth)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0, color = "red") +
+  ggtitle("Survey Wtd Vars") +
+  xlab("Direct") +
+  ylab("Smoothed") +
+  xlim(l2) +
+  ylim(l2)
+
+ggpubr::ggarrange(g1, g2)
+
+```
+
+
+```{r}
+summary(svysmoothed$smooth$mean)
+svysmoothed$fit$summary.hyperpar
+```
