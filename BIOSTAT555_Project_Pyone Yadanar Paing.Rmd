@@ -67,7 +67,11 @@ table(BRFSS$X_impcty, BRFSS$highbp, useNA = "always")
 # clean BRFSS data 
 BRFSS <- subset(BRFSS, !is.na(BRFSS$X_impcty & !is.na(BRFSS$highbp)))
 
+<<<<<<< HEAD
 BRFSS <- read.csv("C:/Users/ppaing2/sae_project/highbp.csv")
+=======
+write.csv(BRFSS, "highbp.rds")
+>>>>>>> 977459966bf5f669abdde1cdb1092f8d7407aefe
 
 WaCounty <- st_read("data/wacounty.shp")
 WaCounty <- st_as_sf(WaCounty)
