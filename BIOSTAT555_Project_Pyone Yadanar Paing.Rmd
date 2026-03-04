@@ -31,6 +31,7 @@ library(haven)
 library(sf)
 library(dplyr)
 library(prioritizr)
+library(INLA)
 ```
 
 First, I processed WA BRFSS County-level data. 
@@ -66,10 +67,12 @@ table(BRFSS$X_impcty, BRFSS$highbp, useNA = "always")
 # clean BRFSS data 
 BRFSS <- subset(BRFSS, !is.na(BRFSS$X_impcty & !is.na(BRFSS$highbp)))
 
+BRFSS <- read.csv("C:/Users/ppaing2/sae_project/highbp.csv")
+
 WaCounty <- st_read("data/wacounty.shp")
 WaCounty <- st_as_sf(WaCounty)
 mat <- adjacency_matrix(WaCounty)
-colnames(mat) <- rownames(mat) <- WaCounty$HRA2010v2_
+colnames(mat) <- rownames(mat) <- WaCounty$CNTY
 mat <- as.matrix(mat[1:dim(mat)[1], 1:dim(mat)[1]])
 mat[1:2, 1:2]
 
@@ -119,12 +122,6 @@ mapPlot(data = WaCounty_mapped,
 
 
 ```{r}
-if(!isTRUE(requireNamespace("INLA", quietly = TRUE))) {
-  install.packages("INLA", 
-                  repos = c(getOption("repos"), 
-                            INLA = "https://inla.r-inla-download.org/R/stable"), 
-                  dep = TRUE)}
-
 FHmodel <- smoothSurvey(
   data = BRFSS, geo = WaCounty, Amat = NULL, response.type = "binary",
   responseVar = "highbp", strataVar = "X_ststr", weightVar = "c_wt",
@@ -134,9 +131,9 @@ FHmodel$fit$summary.fixed[1:5]
 
 # smooth 
 svysmoothed <- smoothSurvey(
-data = BRFSS, geo = WaCounty, Amat = mat, response.type = "binary",
-responseVar = "diab2", strataVar = "strata", weightVar = "rwt_llcp",
-regionVar = "hracode", clusterVar = "~1", CI = 0.95
+  data = BRFSS, geo = WaCounty, Amat = mat, response.type = "binary",
+  responseVar = "highbp", strataVar = "X_ststr", weightVar = "c_wt",
+  regionVar = "X_impcty", clusterVar = "~X_psu", CI = 0.95
 )
 svysmoothed$fit$summary.fixed[1:5]
 svysmoothed$fit$summary.hyper[1:2, 1:5]
@@ -146,26 +143,26 @@ fh_results <- svysmoothed$smooth
 fh_results$sd <- sqrt(fh_results$var) # SD is the square root of variance
 
 # Prepare for mapping 
-colnames(fh_results)[which(colnames(fh_results) == "region")] <- "HRA2010v2_"
+colnames(fh_results)[which(colnames(fh_results) == "region")] <- "CNTY"
 
 # Merge with the spatial data
-WaCounty_FH <- merge(WaCounty, fh_results, by = "HRA2010v2_")
+WaCounty_FH <- merge(WaCounty, fh_results, by = "CNTY")
 
 # Map 1: Posterior Means of Smoking Prevalence (pi)
 mapPlot(data = WaCounty_FH, 
         geo = WaCounty, 
         variables = "mean", 
         labels = "Posterior Mean (Smoothed pi)",
-        by.data = "HRA2010v2_", 
-        by.geo = "HRA2010v2_")
+        by.data = "CNTY", 
+        by.geo = "CNTY")
 
 # Map 2: Posterior Standard Deviations of pi
 mapPlot(data = WaCounty_FH, 
         geo = WaCounty, 
         variables = "sd", 
         labels = "Posterior SD (Smoothed pi)",
-        by.data = "HRA2010v2_", 
-        by.geo = "HRA2010v2_")
+        by.data = "CNTY", 
+        by.geo = "CNTY")
 
 ```
 
