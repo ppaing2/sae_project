@@ -66,6 +66,8 @@ table(BRFSS$X_impcty, BRFSS$highbp, useNA = "always")
 # clean BRFSS data 
 BRFSS <- subset(BRFSS, !is.na(BRFSS$X_impcty & !is.na(BRFSS$highbp)))
 
+write.csv(BRFSS, "highbp.rds")
+
 WaCounty <- st_read("data/wacounty.shp")
 WaCounty <- st_as_sf(WaCounty)
 mat <- adjacency_matrix(WaCounty)
